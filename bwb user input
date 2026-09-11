@@ -326,3 +326,67 @@ plt.tight_layout()
 plt.savefig('bwb_independent_upper_lower.png', dpi=155, facecolor='white',
             bbox_inches='tight')
 print("\nSaved: bwb_independent_upper_lower.png")
+
+
+##output
+==========================================================================
+INDEPENDENT UPPER/LOWER SURFACE INPUT
+  y_upper(xc) =  A_u * xc^n_u * (1-xc)
+  y_lower(xc) = -A_l * xc^n_l * (1-xc)
+==========================================================================
+
+--- CENTERBODY (inner) section ---
+  Upper amplitude, A_u_inner [default 0.1]:  0.1
+  Upper loading exponent, n_u_inner (0.5=fwd peak, 2=aft peak) [default 1.0]:  1
+  Lower amplitude, A_l_inner [default 0.06]:  0.06
+  Lower loading exponent, n_l_inner [default 1.0]:  1
+
+--- OUTER WING section ---
+  Upper amplitude, A_u_outer [default 0.07]:  0.07
+  Upper loading exponent, n_u_outer [default 1.0]:  1
+  Lower amplitude, A_l_outer [default 0.045]:  0.045
+  Lower loading exponent, n_l_outer [default 1.0]:  1
+
+--- Planform (span/chord/sweep -- cosmetic + AR only) ---
+Inner span (mm) [default 22.0]:  22
+Outer span (mm) [default 70.0]:  70
+Inner root chord (mm) [default 86.0]:  86
+Inner tip chord (mm) [default 56.0]:  56
+Outer root chord (mm) [default 56.0]:  56
+Outer tip chord (mm) [default 15.0]:  15
+Inner sweep (deg, cosmetic only) [default 45.0]:  45
+Outer sweep (deg, cosmetic only) [default 35.0]:  35
+
+--- Flight condition & drag model ---
+Angle of attack, alpha (deg) [default 0.0]:  0
+Span efficiency, e (typical 0.7-0.95) [default 0.85]:  0.7
+Skin-friction coefficient, Cf (typical 0.003-0.006) [default 0.004]:  0.004
+
+==========================================================================
+DERIVED camber-line result (from your two independent surfaces)
+==========================================================================
+Centerbody: alpha_L0 = -0.573 deg
+Outer wing: alpha_L0 = -0.358 deg
+
+Wetted perimeter/chord -- centerbody: 2.0023
+Wetted perimeter/chord -- outer wing:  2.0012
+
+==========================================================================
+FINAL RESULTS
+==========================================================================
+S = 4047.0 mm^2   AR = 4.183   A_wetted/S = 2.002
+alpha_L0 (area-weighted) = -0.441 deg
+CL   = 0.0327
+CD0  = 0.0080
+CD_i = 0.0001
+CD   = 0.0081
+L/D  = 4.03
+==========================================================================
+
+WHICH PARAMETER TO CHANGE FOR WHAT EFFECT:
+  A_u_inner / A_u_outer  UP  -> CL up, CD0 up  (more upper bulge)
+  A_l_inner / A_l_outer  UP  -> CL down, CD0 up (more lower dip)
+  n_u, n_l  -> shifts WHERE the curve peaks -> secondary CL shift
+  (A_u == A_l and n_u == n_l)  -> zero camber -> CL from alpha only
+
+Saved: bwb_independent_upper_lower.png
