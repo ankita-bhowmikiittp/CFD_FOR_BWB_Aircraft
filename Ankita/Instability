@@ -1,0 +1,538 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+from matplotlib.colors import LinearSegmentedColormap
+
+
+
+
+
+
+# ------------------------------------------------
+# VISWANATH Going to explain
+#-------------------------------------------------
+# 1. Settings
+# ------------------------------------------------
+Nx, Ny = 280, 90                  # number of fluid cells in x (along the flow) and y (up-down)
+SX, SY = Nx + 2, Ny + 2           # array size: fluid cells plus one ghost cell on each side
+
+D = 14.0                          # diameter of the circle, in cells
+cx = 40.0                         # x position of the circle centre
+cy = (Ny + 1) / 2.0               # y position of the circle centre: exactly mid-height
+
+U_in = 1.0                        # average inlet speed in x
+V_in = 0.0                        # inlet speed in y: zero, no vertical push
+
+EPS = 0.05                        # inlet unevenness: -5% at the bottom to +5% at the top
+TOP_WALL_SPEED = 1.5 * U_in       # the top wall moves right at 1.5 times the inlet speed
+
+RE = 6000                         # Reynolds number of the run
+
+dt = 0.5                          # time step
+JACOBI_ITERS = 150                # number of Jacobi sweeps in every linear solve
+
+N_STEPS = 2400                    # total number of time steps (2400 x 0.5 = 1200 time units)
+FRAME_INTERVAL = 8                # save one picture every 8 steps
+
+
+# ------------------------------------------------
+# 2. Grid and circle
+# ------------------------------------------------
+xx, yy = np.meshgrid(             # build two 2D arrays holding the x and y index of every cell
+    np.arange(SX),                # x indices 0 ... SX-1, ghost cells included
+    np.arange(SY),                # y indices 0 ... SY-1, ghost cells included
+    indexing="ij"                 # arrays are ordered [x, y]
+)                                 # end of meshgrid call
+
+# True inside the solid circle
+circle = (                        # True/False array: is this cell inside the circle?
+    (xx - cx) ** 2                # squared distance from the centre in x
+    + (yy - cy) ** 2              # plus squared distance in y = squared distance to the centre
+    <= (D / 2) ** 2               # inside if that is at most the squared radius
+)                                 # end of the circle mask
+
+# Slightly uneven inlet speed
+ymid = (SY - 1) / 2.0             # middle index in y
+
+U_PROF = U_in * (                 # inlet speed at each height y, an array of length SY
+    1.0                           # start from the average speed (factor 1)
+    + EPS * (np.arange(SY) - ymid) / (SY / 2.0)   # add a straight slope: -EPS at bottom, +EPS at top
+)                                 # end of the inlet profile
+
+
+# ------------------------------------------------
+# 3. Boundary conditions
+# ------------------------------------------------
+def set_bnd_u(u):                 # set the boundary values of the horizontal velocity u
+
+    u[0, :] = U_PROF              # left edge (inlet): the uneven inlet profile
+    u[-1, :] = u[-2, :]           # right edge (outlet): copy the neighbouring column
+
+    # Bottom fixed wall
+    u[:, 0] = 0.0                 # bottom edge: fixed wall, u = 0 (no-slip)
+
+    # Top moving wall
+    u[:, -1] = TOP_WALL_SPEED     # top edge: wall moving right at 1.5 times the inlet speed
+
+
+def set_bnd_v(v):                 # set the boundary values of the vertical velocity v
+
+    v[0, :] = V_in                # left edge (inlet): vertical speed = V_in = 0
+    v[-1, :] = v[-2, :]           # right edge (outlet): copy the neighbouring column
+
+    # No vertical flow through either wall
+    v[:, 0] = 0.0                 # bottom wall: no flow through it
+    v[:, -1] = 0.0                # top wall: no flow through it
+
+
+def set_bnd_vel(u, v):            # set the boundaries of both velocity components
+
+    set_bnd_u(u)                  # apply the u boundary rules
+    set_bnd_v(v)                  # apply the v boundary rules
+
+    # Circle is another solid boundary
+    u[circle] = 0.0               # zero horizontal velocity in every cell inside the circle
+    v[circle] = 0.0               # zero vertical velocity in every cell inside the circle
+
+
+def set_bnd_pressure(p):          # set the boundary values of the pressure p
+
+    p[0, :] = p[1, :]             # inlet: copy the neighbouring column (zero pressure gradient)
+    p[-1, :] = 0.0                # outlet: pressure fixed at 0 (reference)
+
+    p[:, 0] = p[:, 1]             # bottom wall: copy the neighbouring row (zero gradient)
+    p[:, -1] = p[:, -2]           # top wall: copy the neighbouring row (zero gradient)
+
+
+# ------------------------------------------------
+# 4. Diffusion step
+# ------------------------------------------------
+def diffuse_component(x, x0, viscosity, dt, is_u):   # spread out one velocity component by viscosity
+
+    a = dt * viscosity            # diffusion weight: time step times viscosity
+    c_inv = 1.0 / (1.0 + 4.0 * a) # divisor from the implicit diffusion formula
+
+    for _ in range(JACOBI_ITERS): # repeat the Jacobi sweep to solve the diffusion equation
+
+        x[1:-1, 1:-1] = (         # new value for every fluid cell
+            x0[1:-1, 1:-1]        # the value before diffusion
+            + a * (               # plus a times the sum of the four neighbours:
+                x[0:-2, 1:-1]     # neighbour on the left
+                + x[2:, 1:-1]     # neighbour on the right
+                + x[1:-1, 0:-2]   # neighbour below
+                + x[1:-1, 2:]     # neighbour above
+            )                     # end of the neighbour sum
+        ) * c_inv                 # divide by (1 + 4a)
+
+        if is_u:                  # is this the horizontal velocity?
+            set_bnd_u(x)          # yes: apply the u boundary rules after each sweep
+        else:                     # otherwise it is the vertical velocity
+            set_bnd_v(x)          # apply the v boundary rules after each sweep
+
+    return x                      # give back the diffused field
+
+
+
+
+
+
+
+#Ankita is going to explain
+
+# ------------------------------------------------
+# 5. Advection step
+# ------------------------------------------------
+def advect(d, d0, u, v, dt, is_u):   # move field d with the flow; d = new values, d0 = old values, (u, v) = carrying velocity
+
+    Xg, Yg = np.meshgrid(            # x and y position of every fluid cell
+        np.arange(1, Nx + 1),        # x positions 1 ... Nx (ghost cells left out)
+        np.arange(1, Ny + 1),        # y positions 1 ... Ny (ghost cells left out)
+        indexing="ij"                # arrays are ordered [x, y]
+    )                                # end of meshgrid call
+
+    # Trace each fluid cell backward
+    x = Xg - dt * u[1:-1, 1:-1]      # x where this fluid was one time step ago: x - dt*u
+    y = Yg - dt * v[1:-1, 1:-1]      # y where this fluid was one time step ago: y - dt*v
+
+    x = np.clip(x, 0.5, Nx + 0.5)    # keep x inside the array: not beyond the wall (0.5) or Nx + 0.5
+    y = np.clip(y, 0.5, Ny + 0.5)    # keep y inside the array in the same way
+
+    i0 = x.astype(int)               # whole-number cell to the left of the traced-back point
+    i1 = i0 + 1                      # the cell to the right of it
+
+    j0 = y.astype(int)               # whole-number cell below the traced-back point
+    j1 = j0 + 1                      # the cell above it
+
+    s1 = x - i0                      # fraction of the way from the left cell to the right cell
+    s0 = 1.0 - s1                    # the remaining fraction (weight of the left cell)
+
+    t1 = y - j0                      # fraction of the way from the lower cell to the upper cell
+    t0 = 1.0 - t1                    # the remaining fraction (weight of the lower cell)
+
+    # Bilinear interpolation
+    d[1:-1, 1:-1] = (                # write the new value into every fluid cell
+        s0 * (                       # left column, weighted by s0:
+            t0 * d0[i0, j0]          #   lower-left old value times its weight t0
+            + t1 * d0[i0, j1]        #   plus upper-left old value times its weight t1
+        )                            # end of the left column
+        + s1 * (                     # plus right column, weighted by s1:
+            t0 * d0[i1, j0]          #   lower-right old value times its weight t0
+            + t1 * d0[i1, j1]        #   plus upper-right old value times its weight t1
+        )                            # end of the right column
+    )                                # end of the interpolation
+
+    if is_u:                         # is the moved field the horizontal velocity?
+        set_bnd_u(d)                 # yes: apply the u boundary rules
+    else:                            # otherwise it is the vertical velocity
+        set_bnd_v(d)                 # apply the v boundary rules
+
+    return d                         # give back the advected field
+
+
+
+
+
+
+
+
+#Vidyanjali  is going to expln
+# 6. Pressure projection
+
+def project(u, v, p, div):
+
+    # Calculate the negative velocity divergence using central differences
+    div[1:-1, 1:-1] = -0.5 * (u[2:, 1:-1] - u[0:-2, 1:-1] + v[1:-1, 2:] - v[1:-1, 0:-2])
+
+    set_bnd_pressure(div)    # Apply boundary conditions to the divergence and pressure fields
+    set_bnd_pressure(p)
+
+     # Solve the pressure Poisson equation using Jacobi iterations
+    for _ in range(JACOBI_ITERS):
+        
+        # Update interior pressure values using neighboring pressures
+        p[1:-1, 1:-1] = (div[1:-1, 1:-1] + p[0:-2, 1:-1] + p[2:, 1:-1] + p[1:-1, 0:-2] + p[1:-1, 2:]) / 4.0
+        
+        set_bnd_pressure(p)   # Reapply pressure boundary conditions after each iteration
+
+    # Correct the horizontal velocity by subtracting the pressure gradient in x
+    u[1:-1, 1:-1] -= 0.5 * (p[2:, 1:-1] - p[0:-2, 1:-1])
+     # Correct the vertical velocity by subtracting the pressure gradient in y
+    v[1:-1, 1:-1] -= 0.5 * (p[1:-1, 2:] - p[1:-1, 0:-2]) 
+
+    # Reapply the velocity boundary conditions
+    set_bnd_vel(u, v)
+    # Return the corrected horizontal and vertical velocity fields
+    return u, v
+
+
+
+
+
+
+# Samun is going to explain
+# ------------------------------------------------
+# 7. One simulation
+# ------------------------------------------------
+def run_case(Re, n_steps, frame_interval):
+    """
+    Runs the full simulation once.
+    In every time step the flow is updated in 4 parts:
+    diffusion -> projection -> advection -> projection
+    """
+
+    # Find viscosity from the Reynolds number
+    viscosity = U_in * D / Re
+
+    # Start: fluid moves to the right with speed U_in, no up-down motion
+    u = np.full((SX, SY), U_in)
+    v = np.zeros((SX, SY))
+
+    # Set the inlet, walls, outlet, and make the cylinder solid
+    set_bnd_vel(u, v)
+
+    # Empty arrays used by the pressure step
+    p = np.zeros((SX, SY))
+    div = np.zeros((SX, SY))
+
+    # Empty lists to save pictures (for GIF) and probe values
+    frames = []
+    probe = []
+
+    # Point where we measure the flow: 3 diameters behind the cylinder
+    probe_x = int(cx + 3 * D)
+    probe_y = int(round(cy))
+
+    # Main time loop: each loop moves the flow forward by dt
+    for step in range(n_steps):
+
+        # 1. Diffusion: velocity spreads out due to viscosity
+        # Save a copy of the old velocity before changing it
+        u0 = u.copy()
+        v0 = v.copy()
+
+        diffuse_component(u, u0, viscosity, dt, True)
+        diffuse_component(v, v0, viscosity, dt, False)
+
+        # Fix the flow so no fluid is created or lost
+        project(u, v, p, div)
+
+        # 2. Advection: the flow carries the velocity forward
+        # Save a copy of the old velocity before changing it
+        u0 = u.copy()
+        v0 = v.copy()
+
+        advect(u, u0, u0, v0, dt, True)
+        advect(v, v0, u0, v0, dt, False)
+
+        # Fix the flow again so no fluid is created or lost
+        project(u, v, p, div)
+
+        # Save up-down velocity behind the cylinder (used for Strouhal number)
+        probe.append(v[probe_x, probe_y])
+
+        # Every few steps, save a picture of the flow speed (used for GIF)
+        if step % frame_interval == 0:
+
+            speed = np.sqrt(
+                u[1:-1, 1:-1] ** 2
+                + v[1:-1, 1:-1] ** 2
+            )
+
+            frames.append(speed.copy())
+
+    # Give back: pictures, probe values, and final velocity
+    return frames, np.array(probe), u, v
+
+
+
+
+
+
+
+
+
+
+
+#checking strouhal no
+## STROUHAL NUMBER
+#   Formula:     St = f * D / U_in
+#   Definition:  the Strouhal number is the shedding frequency made dimensionless.
+#                f = 1 / T is the number of vortex cycles per unit time (T = period of one cycle),
+#                D is the diameter of the circle, and U_in is the inflow speed.
+
+##     Re about 47 : shedding starts, St about 0.12   
+#     Re = 100    : St about 0.164                    
+#     high Re     : St about 0.2 
+
+# 
+def strouhal(probe):
+ 
+    # Use only the late part of the signal: the second half of the run
+    late = probe[len(probe) // 2:]
+    # Subtract the mean so the signal oscillates around zero
+    late = late - late.mean()
+ 
+    # If the biggest swing is below 0.05, there is no clear shedding
+    if np.abs(late).max() < 0.05:
+        return None, None
+ 
+    # A crossing is the moment the probe signal passes through zero going upward,
+    # and the time between two of them is one shedding period.
+    crossings = np.where(
+        (late[:-1] < 0)       # this sample is below zero
+        & (late[1:] >= 0)     # the next sample is at or above zero
+    )[0]                      # keep only the index positions of these crossings
+ 
+    # With fewer than 3 crossings the period would be unreliable
+    if len(crossings) < 3:
+        return None, None
+ 
+    # Mean number of steps between crossings, times dt, gives the period T
+    period = np.diff(crossings).mean() * dt
+    # Frequency is one over the period
+    frequency = 1.0 / period
+ 
+    # Strouhal number: frequency times circle diameter over inflow speed
+    St = frequency * D / U_in
+ 
+    # Return both the Strouhal number and the period
+    return St, period
+
+
+###checking some runcases
+# 9. Print selected velocity values
+# ------------------------------------------------
+def print_velocity_grid(u, v):
+
+    x_cells = [20, 60, 110, 170, 230]
+    y_cells = [75, 45, 15]
+
+    print("\nVelocity grid at final time")
+    print("(u, v) = horizontal velocity, vertical velocity\n")
+
+    print("      ", end="")
+
+    for x in x_cells:
+        print(f"x={x:<3}".ljust(19), end="")
+
+    print()
+
+    for y in y_cells:
+
+        print(f"y={y:<3} ", end="")
+
+        for x in x_cells:
+
+            print(
+                f"({u[x, y]:+.3f}, {v[x, y]:+.3f}) ".ljust(19),
+                end=""
+            )
+
+        print()
+
+
+# ------------------------------------------------
+# 10. Run simulation and print results
+# ------------------------------------------------
+print("Wall conditions:")
+print("  Bottom: stationary no-slip wall, u = 0 and v = 0")
+print(
+    f"  Top: moving wall, "
+    f"u = {TOP_WALL_SPEED:.2f} and v = 0"
+)
+
+print(f"\nRunning cylinder simulation at Re = {RE} ...")
+
+frames, probe, u_final, v_final = run_case(
+    RE,
+    N_STEPS,
+    FRAME_INTERVAL
+)
+
+St, T = strouhal(probe)
+
+if St is None:
+    print("\nNo clear periodic shedding was detected.")
+else:
+    print(
+        f"\nShedding period T = {T:.2f}"
+        f"\nFrequency f = {1 / T:.5f}"
+        f"\nStrouhal number St = {St:.3f}"
+    )
+
+print_velocity_grid(u_final, v_final)
+
+
+##with the help of claude updating the snapshot_frames
+# 11. Save GIF
+# ------------------------------------------------
+BG = "#0a2a4a"
+FG = "#e8f2ff"
+
+water_colours = LinearSegmentedColormap.from_list(
+    "water",
+    ["#0a3a66", "#3f8fd1", "#bfe3ff"]
+)
+
+fig, ax = plt.subplots(
+    figsize=(12, 4.5),
+    facecolor=BG
+)
+
+fig.subplots_adjust(
+    left=0.06,
+    right=0.98,
+    top=0.86,
+    bottom=0.11
+)
+
+fig.suptitle(
+    f"Circle flow at Re = {RE}: unequal top and bottom walls",
+    color=FG,
+    fontsize=12
+)
+
+image = ax.imshow(
+    frames[3].T,
+    origin="lower",
+    cmap=water_colours,
+    vmin=0,
+    vmax=1.8,
+    interpolation="bilinear",
+    aspect="auto"
+)
+
+# 
+ax.add_patch(
+    plt.Circle(
+        (cx - 1, cy - 1),
+        D / 2,
+        facecolor="#2b2b2b",
+        edgecolor="#ffffff",
+        linewidth=1,
+        zorder=3
+    )
+)
+
+ax.set_facecolor(BG)
+
+# Visible coordinate grid
+ax.set_xticks(np.arange(0, Nx + 1, 20))
+ax.set_yticks(np.arange(0, Ny + 1, 15))
+
+ax.tick_params(
+    colors=FG,
+    labelsize=7
+)
+
+ax.grid(
+    color="#bfe3ff",
+    alpha=0.18,
+    linewidth=0.5
+)
+
+ax.text(
+    0.99,
+    0.05,
+    "Top: moving wall → 1.5 U_in\nBottom: fixed no-slip",
+    transform=ax.transAxes,
+    ha="right",
+    va="bottom",
+    color=FG,
+    fontsize=8,
+    bbox={
+        "facecolor": BG,
+        "alpha": 0.75,
+        "edgecolor": "#bfe3ff"
+    }
+)
+
+# Use every second saved frame
+shown = list(range(3, len(frames), 2))
+
+
+def update(k):
+
+    image.set_data(frames[shown[k]].T)
+
+    return [image]
+
+
+anim = animation.FuncAnimation(
+    fig,
+
+    update,
+    frames=len(shown),
+    blit=False
+)
+
+anim.save(
+    "circle_Re6000_unequal_walls.gif",
+    writer=animation.PillowWriter(fps=7),
+    dpi=70,
+    savefig_kwargs={"facecolor": BG}
+)
+
+plt.close(fig)
+
+print("\nSaved: circle_Re6000_unequal_walls.gif")
